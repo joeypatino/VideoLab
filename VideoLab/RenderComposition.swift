@@ -24,3 +24,17 @@ public class RenderComposition {
     
     public init() {}
 }
+
+public extension RenderComposition {
+    convenience init(renderSize: CGSize, layers: [RenderLayer]) {
+        self.init()
+        self.renderSize = renderSize
+        self.layers = layers
+    }
+
+    convenience init(renderSize: CGSize, layers: [RenderLayerGroup]) {
+        self.init()
+        self.renderSize = renderSize
+        self.layers = layers
+    }
+}

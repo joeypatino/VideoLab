@@ -10,8 +10,11 @@ import AVFoundation
 class VideoRenderLayer {
     let renderLayer: RenderLayer
     var trackID: CMPersistentTrackID = kCMPersistentTrackID_Invalid
-    var timeRangeInTimeline: CMTimeRange
+    var timeRangeInTimeline: CMTimeRange {
+        didSet { renderLayer.timeRange = timeRangeInTimeline }
+    }
     var preferredTransform: CGAffineTransform = CGAffineTransform.identity
+    var transition: Transition { renderLayer.transition }
     
     init(renderLayer: RenderLayer) {
         self.renderLayer = renderLayer
@@ -44,9 +47,10 @@ class VideoRenderLayer {
         }
     }
 
-    class func addBlankVideoTrack(to composition: AVMutableComposition, in timeRange: CMTimeRange, preferredTrackID: CMPersistentTrackID) {
+    @discardableResult
+    class func addBlankVideoTrack(to composition: AVMutableComposition, in timeRange: CMTimeRange, preferredTrackID: CMPersistentTrackID) -> AVMutableCompositionTrack? {
         guard let assetTrack = blankVideoAsset?.tracks(withMediaType: .video).first else {
-            return
+            return nil
         }
 
         let compositionTrack: AVMutableCompositionTrack? = {
@@ -66,9 +70,11 @@ class VideoRenderLayer {
                 try compositionTrack.insertTimeRange(insertTimeRange, of:assetTrack , at: timeRange.start)
                 compositionTrack.scaleTimeRange(CMTimeRange(start: timeRange.start, duration: insertTimeRange.duration), toDuration: timeRange.duration)
             } catch {
-                // TODO: handle Error
+                print("TODO: handle Error", error)
             }
         }
+        
+        return compositionTrack
     }
     
     // MARK: - Private

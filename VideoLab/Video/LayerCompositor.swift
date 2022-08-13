@@ -7,12 +7,19 @@
 //
 
 import AVFoundation
+import MTTransitions
+import MetalPetal
 
 class LayerCompositor {
     let passthrough = Passthrough()
     let yuvToRGBConversion = YUVToRGBConversion()
     let blendOperation = BlendOperation()
-
+    
+    private lazy var renderer = VideoTransitionRenderer(effect: effect)
+    
+    /// Effect apply to video transition
+    var effect: MTTransition.Effect { .none }
+    
     // MARK: - Public
     func renderPixelBuffer(_ pixelBuffer: CVPixelBuffer, for request: AVAsynchronousVideoCompositionRequest) {
         guard let instruction = request.videoCompositionInstruction as? VideoCompositionInstruction else {
@@ -25,7 +32,7 @@ class LayerCompositor {
             Texture.clearTexture(outputTexture)
             return
         }
-
+        
         for (index, videoRenderLayer) in instruction.videoRenderLayers.enumerated() {
             autoreleasepool {
                 // The first output must be disabled for reading, because newPixelBuffer is taken from the buffer pool, it may be the previous pixelBuffer
@@ -33,17 +40,27 @@ class LayerCompositor {
                 renderLayer(videoRenderLayer, outputTexture: outputTexture, enableOutputTextureRead: enableOutputTextureRead, for: request)
             }
         }
+        
+        renderTransition(request, in: outputTexture)
     }
     
     // MARK: - Private
     private func renderLayer(_ videoRenderLayer: VideoRenderLayer,
-                     outputTexture: Texture?,
-                     enableOutputTextureRead: Bool,
-                     for request: AVAsynchronousVideoCompositionRequest) {
+                             outputTexture: Texture?,
+                             enableOutputTextureRead: Bool,
+                             for request: AVAsynchronousVideoCompositionRequest) {
         guard let outputTexture = outputTexture else {
             return
         }
-
+        
+        guard let currentInstruction = request.videoCompositionInstruction as? VideoCompositionInstruction else {
+            return
+        }
+        
+        if self.renderer.effect != currentInstruction.transition.effect {
+            self.renderer = VideoTransitionRenderer(effect: currentInstruction.transition.effect)
+        }
+        
         // Convert composite time to internal layer time
         let layerInternalTime = request.compositionTime - videoRenderLayer.timeRangeInTimeline.start
         
@@ -69,6 +86,7 @@ class LayerCompositor {
             
             blendOutputText(outputTexture,
                             with: sourceTexture,
+                            request: request,
                             blendMode: videoRenderLayer.renderLayer.blendMode,
                             blendOpacity: videoRenderLayer.renderLayer.blendOpacity,
                             transform: videoRenderLayer.renderLayer.transform,
@@ -96,7 +114,8 @@ class LayerCompositor {
             
             renderTextureLayer(groupTexture)
             groupTexture.unlock()
-        } else if videoRenderLayer.trackID != kCMPersistentTrackID_Invalid {
+        }
+        else if videoRenderLayer.trackID != kCMPersistentTrackID_Invalid {
             // Texture layer source contains a video track
             guard let pixelBuffer = request.sourceFrame(byTrackID: videoRenderLayer.trackID) else {
                 return
@@ -112,16 +131,21 @@ class LayerCompositor {
                 // Lock is invoked in the bgraVideoTexture method
                 videoTexture.unlock()
             }
-        } else if let sourceTexture = videoRenderLayer.renderLayer.source?.texture(at: layerInternalTime) {
+        }
+        else if let sourceTexture = videoRenderLayer.renderLayer.source?.texture(at: layerInternalTime) {
             // Texture layer source is a image
-            guard let imageTexture = cloneTexture(from: sourceTexture) else {
+            guard let foregroundTexture = cloneTexture(from: sourceTexture) else {
                 return
             }
             
-            renderTextureLayer(imageTexture)
-            // Lock is invoked in the imageTexture method
-            imageTexture.unlock()
-        } else {
+            defer {
+                // Lock is invoked in the imageTexture method
+                foregroundTexture.unlock()
+            }
+            renderTextureLayer(foregroundTexture)
+            renderImageTransition(request, in: outputTexture)
+        }
+        else {
             // Layer without texture. All operations of the layer are applied to the previous output texture
             for operation in videoRenderLayer.renderLayer.operations {
                 autoreleasepool {
@@ -136,12 +160,12 @@ class LayerCompositor {
             }
         }
     }
-
+    
     private func bgraVideoTexture(from pixelBuffer: CVPixelBuffer, preferredTransform: CGAffineTransform) -> Texture? {
         var videoTexture: Texture?
         let bufferWidth = CVPixelBufferGetWidth(pixelBuffer)
         let bufferHeight = CVPixelBufferGetHeight(pixelBuffer)
-
+        
         let pixelFormatType = CVPixelBufferGetPixelFormatType(pixelBuffer);
         if pixelFormatType == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange || pixelFormatType == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange {
             let luminanceTexture = Texture.makeTexture(pixelBuffer: pixelBuffer, pixelFormat: .r8Unorm, width:bufferWidth, height: bufferHeight, plane: 0)
@@ -172,7 +196,7 @@ class LayerCompositor {
     private func cloneTexture(from sourceTexture: Texture) -> Texture? {
         let textureWidth = sourceTexture.width
         let textureHeight = sourceTexture.height
-    
+        
         guard let cloneTexture = sharedMetalRenderingDevice.textureCache.requestTexture(width: textureWidth, height: textureHeight) else {
             return nil
         }
@@ -185,6 +209,7 @@ class LayerCompositor {
     
     private func blendOutputText(_ outputTexture: Texture,
                                  with texture: Texture,
+                                 request: AVAsynchronousVideoCompositionRequest,
                                  blendMode: BlendMode,
                                  blendOpacity: Float,
                                  transform: Transform,
@@ -205,6 +230,148 @@ class LayerCompositor {
         blendOperation.enableOutputTextureRead = enableOutputTextureRead
         blendOperation.addTexture(texture, at: 0)
         blendOperation.renderTexture(outputTexture)
+    }
+    
+    // MARK: Transitions
+    
+    private func renderImageTransition(_ request: AVAsynchronousVideoCompositionRequest, in outputTexture: Texture) {
+        guard let instruction = request.videoCompositionInstruction as? VideoCompositionInstruction else {
+            return
+        }
+
+        let transition = instruction.transition
+        guard transition != Transition.none else {
+            return
+        }
+
+        // get the foreground layer
+        guard let foregroundLayer = instruction.videoRenderLayers.first else {
+            return
+        }
+
+        // get the background layer
+        guard let backgroundLayer = instruction.videoRenderLayers.last else {
+            return
+        }
+        
+        // Convert composite time to internal layer time
+        let layerInternalTime = request.compositionTime - foregroundLayer.timeRangeInTimeline.start
+
+        // get the foreground texture
+        guard let foregroundTexture = foregroundLayer.renderLayer.source?.texture(at: layerInternalTime) else {
+            return
+        }
+        
+        // get the background texture
+        guard let backgroundTexture = backgroundLayer.renderLayer.source?.texture(at: layerInternalTime) else {
+            return
+        }
+        
+        let tween = factorForTimeInRange(request.compositionTime, range: request.videoCompositionInstruction.timeRange)
+        let tweenFactor = Float(tween)
+        let foreGround = MTIImage(texture: foregroundTexture.texture, alphaType: .alphaIsOne)
+        let backGround = MTIImage(texture: backgroundTexture.texture, alphaType: .alphaIsOne)
+
+        guard let transitionBuffer = renderer.renderPixelBuffer(usingForegroundSourceBuffer: foreGround,
+                                                                andBackgroundSourceBuffer: backGround,
+                                                                forTweenFactor:Float(tweenFactor)) else {
+            return
+        }
+        guard let transitionTexture = Texture(mtiImage: transitionBuffer, device: blendOperation.renderPipelineState.device) else { return }
+        blendOperation.addTexture(transitionTexture, at: 0)
+        blendOperation.renderTexture(outputTexture)
+    }
+    
+    private func renderTransition(_ request: AVAsynchronousVideoCompositionRequest, in outputTexture: Texture) {
+        guard let instruction = request.videoCompositionInstruction as? VideoCompositionInstruction else {
+            return
+        }
+        
+        let transition = instruction.transition
+        guard transition != Transition.none else {
+            return
+        }
+
+        // Source pixel buffers are used as inputs while rendering the transition.
+        guard let foregroundSourceBuffer = request.sourceFrame(byTrackID: instruction.foregroundTrackID) else {
+            return
+        }
+        guard let backgroundSourceBuffer = request.sourceFrame(byTrackID: instruction.backgroundTrackID) else {
+            return
+        }
+
+        let tween = factorForTimeInRange(request.compositionTime, range: request.videoCompositionInstruction.timeRange)
+        let tweenFactor = Float(tween)
+        let foreGround = MTIImage(cvPixelBuffer: foregroundSourceBuffer, alphaType: .alphaIsOne)
+        let backGround = MTIImage(cvPixelBuffer: backgroundSourceBuffer, alphaType: .alphaIsOne)
+        guard let transitionBuffer = renderer.renderPixelBuffer(usingForegroundSourceBuffer: foreGround,
+                                                                andBackgroundSourceBuffer: backGround,
+                                                                forTweenFactor:Float(tweenFactor)) else {
+            return
+        }
+        guard let transitionTexture = Texture(mtiImage: transitionBuffer, device: passthrough.renderPipelineState.device) else { return }
+        passthrough.addTexture(transitionTexture, at: 0)
+        passthrough.renderTexture(outputTexture)
+    }
+    
+    private func factorForTimeInRange( _ time: CMTime, range: CMTimeRange) -> Float64 { /* 0.0 -> 1.0 */
+        let elapsed = CMTimeSubtract(time, range.start)
+        return CMTimeGetSeconds(elapsed) / CMTimeGetSeconds(range.duration)
+    }
+}
+
+extension Texture {
+    convenience init?(mtiImage: MTIImage, device: MTLDevice) {
+        let attrs = [kCVPixelBufferCGImageCompatibilityKey: true,
+             kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                      kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault,
+                            Int(mtiImage.size.width), Int(mtiImage.size.height),
+                            kCVPixelFormatType_32BGRA,
+                            attrs, &pixelBuffer)
+        guard let pixelBuffer = pixelBuffer else {
+            return nil
+        }
+        guard let ctx = try? MTIContext(device: device) else {
+            return nil
+        }
+        try? ctx.render(mtiImage, to: pixelBuffer)
+        guard let texture = Texture.makeTexture(pixelBuffer: pixelBuffer) else {
+            return nil
+        }
+        self.init(texture: texture.texture)
+    }
+}
+
+extension CVPixelBuffer {
+    static func makeWithMTIImage(_ mtiImage: MTIImage) -> CVPixelBuffer? {
+        let attrs = [kCVPixelBufferCGImageCompatibilityKey: true,
+             kCVPixelBufferCGBitmapContextCompatibilityKey: true,
+                      kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary
+        var pixelBuffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault,
+                            Int(mtiImage.size.width), Int(mtiImage.size.height),
+                            kCVPixelFormatType_32BGRA,
+                            attrs, &pixelBuffer)
+        guard let pixelBuffer = pixelBuffer else {
+            return nil
+        }
+        return pixelBuffer
+    }
+}
+
+extension MTIImage {
+    func image(device: MTLDevice) -> UIImage? {
+        guard let ctx = try? MTIContext(device: device) else {
+            return nil
+        }
+        let cgImage = try! ctx.makeCGImage(from: self)
+        return UIImage(cgImage: cgImage)
+    }
+    
+    convenience init?(texture: Texture, device: MTLDevice) {
+        self.init(texture: texture.texture, alphaType: .alphaIsOne)
     }
 }
 

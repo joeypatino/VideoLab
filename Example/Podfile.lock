@@ -1,16 +1,34 @@
 PODS:
-  - VideoLab (0.0.1)
+  - MetalPetal (1.24.2):
+    - MetalPetal/Core (= 1.24.2)
+  - MetalPetal/Core (1.24.2)
+  - MetalPetal/Swift (1.24.2):
+    - MetalPetal/Core
+  - MTTransitions (1.6.5):
+    - MetalPetal
+    - MetalPetal/Swift
+  - VideoLab (0.0.1):
+    - MTTransitions
 
 DEPENDENCIES:
+  - MTTransitions (from `/Users/joey/MTTransitions`)
   - VideoLab (from `../`)
 
+SPEC REPOS:
+  trunk:
+    - MetalPetal
+
 EXTERNAL SOURCES:
+  MTTransitions:
+    :path: "/Users/joey/MTTransitions"
   VideoLab:
     :path: "../"
 
 SPEC CHECKSUMS:
-  VideoLab: b073f9e63b9625b2783d658a543969f559e506c1
+  MetalPetal: 063cb7f12c011a22fd311a355a4bd05302fc0de4
+  MTTransitions: 3487587e1907f8394afb2741501d72e2c5f92066
+  VideoLab: 18e1495ca2df4cddd5e04e168677ae2c881491eb
 
-PODFILE CHECKSUM: e23437e7691da9acd7c9dd1e1aef814df94c84f6
+PODFILE CHECKSUM: 75db4b206cba33ee67e5e38e0a7986b8ecb1e9f6
 
-COCOAPODS: 1.9.3
+COCOAPODS: 1.11.3

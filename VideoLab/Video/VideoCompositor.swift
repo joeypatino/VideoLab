@@ -7,6 +7,7 @@
 //
 
 import AVFoundation
+import MTTransitions
 
 class VideoCompositor: NSObject, AVVideoCompositing {
     private var renderingQueue = DispatchQueue(label: "com.studio.VideoLab.renderingqueue")
@@ -16,21 +17,32 @@ class VideoCompositor: NSObject, AVVideoCompositing {
     
     private let layerCompositor = LayerCompositor()
     
-    // MARK: - AVVideoCompositing
-    var sourcePixelBufferAttributes: [String : Any]? =
-        [String(kCVPixelBufferPixelFormatTypeKey): [Int(kCVPixelFormatType_32BGRA),
-                                                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange),
-                                                    Int(kCVPixelFormatType_420YpCbCr8BiPlanarFullRange)],
-         String(kCVPixelBufferOpenGLESCompatibilityKey): true]
-    
+    /// Returns the pixel buffer attributes required by the video compositor for new buffers created for processing.
     var requiredPixelBufferAttributesForRenderContext: [String : Any] =
-        [String(kCVPixelBufferPixelFormatTypeKey): Int(kCVPixelFormatType_32BGRA),
-         String(kCVPixelBufferOpenGLESCompatibilityKey): true]
-
+    [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
+    
+    /// The pixel buffer attributes of pixel buffers that will be vended by the adaptor’s CVPixelBufferPool.
+    var sourcePixelBufferAttributes: [String : Any]? =
+    [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
+    
+    /// Maintain the state of render context changes.
+    private var internalRenderContextDidChange = false
+    
+    /// Actual state of render context changes.
+    private var renderContextDidChange: Bool {
+        get { renderContextQueue.sync { internalRenderContextDidChange } }
+        set { renderContextQueue.sync { internalRenderContextDidChange = newValue } }
+    }
+    
+    override init() {
+        super.init()
+    }
+    
     func renderContextChanged(_ newRenderContext: AVVideoCompositionRenderContext) {
-        renderingQueue.sync {
+        renderContextQueue.sync {
             renderContext = newRenderContext
         }
+        renderContextDidChange = true
     }
     
     enum PixelBufferRequestError: Error {
@@ -68,6 +80,8 @@ class VideoCompositor: NSObject, AVVideoCompositing {
         guard let newPixelBuffer = renderContext?.newPixelBuffer() else {
             return nil
         }
+        
+        if renderContextDidChange { renderContextDidChange = false }
         
         layerCompositor.renderPixelBuffer(newPixelBuffer, for: request)
         

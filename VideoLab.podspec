@@ -19,10 +19,10 @@ Pod::Spec.new do |s|
   s.author           = { 'bear' => 'ruanjingxiong@gmail.com' }
   s.source           = { :git => 'https://github.com/ruanjx/VideoLab.git', :tag => s.version.to_s }
 
-  s.ios.deployment_target = '11.0'
+  s.ios.deployment_target = '12.0'
   s.swift_version = "5"
 
   s.source_files = 'VideoLab/**/*.{swift,h,m,metal}'
   s.resources    = 'VideoLab/VideoLab.bundle'
-
+  s.dependency 'MTTransitions'
 end

@@ -1,6 +1,9 @@
+platform:ios, '12.0'
 use_frameworks!
 
+
 target 'VideoLab_Example' do
+  pod 'MTTransitions', :path => '/Users/joey/MTTransitions'
   pod 'VideoLab', :path => '../'
 
   target 'VideoLab_Tests' do

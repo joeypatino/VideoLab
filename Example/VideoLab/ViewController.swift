@@ -36,6 +36,10 @@ class ViewController: UITableViewController {
                 return layerGroupDemo()
             } else if indexPath.row == 6 {
                 return transition2Demo()
+            } else if indexPath.row == 7 {
+                return advancedImageTransitionDemo()
+            } else if indexPath.row == 8 {
+                return advancedVideoTransitionDemo()
             }
             
             return simpleDemo()
@@ -518,6 +522,75 @@ class ViewController: UITableViewController {
         composition.renderSize = CGSize(width: 1280, height: 720)
         composition.layers = [layerGroup1, layerGroup2]
         
+        // 3. VideoLab
+        let videoLab = VideoLab(renderComposition: composition)
+        
+        return videoLab
+    }
+    
+    func advancedImageTransitionDemo() -> VideoLab {
+        let duration = CMTime(seconds: 5, preferredTimescale: 600)
+        
+        // 1. Layer 1
+        let source_1 = ImageSource(cgImage: UIImage(named: "image1.JPG")?.cgImage!)
+        source_1.duration = duration
+        source_1.selectedTimeRange = CMTimeRange(start: CMTime.zero, duration: duration)
+        var time = source_1.selectedTimeRange
+        let layer_1 = RenderLayer(timeRange: time, source: source_1)
+        layer_1.transform = Transform(center: CGPoint(x: 0.5, y: 0.5), rotation: 0, scale: 0.35)
+        layer_1.transition = Transition(.randomSquares)
+
+        // 1. Layer 2
+        let source_2 = ImageSource(cgImage: UIImage(named: "image2.HEIC")?.cgImage!)
+        source_2.duration = duration
+        source_2.selectedTimeRange = CMTimeRange(start: CMTime.zero, duration: duration)
+        time = source_2.selectedTimeRange
+        time.start = CMTimeRangeGetEnd(layer_1.timeRange)
+        let layer_2 = RenderLayer(timeRange: time, source: source_2)
+        layer_2.transform = Transform(center: CGPoint(x: 0.5, y: 0.5), rotation: 0, scale: 0.35)
+        layer_2.transition = Transition(.fade)
+        
+        // 1. Layer 3
+        let source_3 = ImageSource(cgImage: UIImage(named: "image3.HEIC")?.cgImage!)
+        source_3.duration = duration
+        source_3.selectedTimeRange = CMTimeRange(start: CMTime.zero, duration: duration)
+        time = source_3.selectedTimeRange
+        time.start = CMTimeRangeGetEnd(layer_2.timeRange)
+        let layer_3 = RenderLayer(timeRange: time, source: source_3)
+        layer_3.transform = Transform(center: CGPoint(x: 0.5, y: 0.5), rotation: 0, scale: 0.35)
+        layer_3.transition = Transition(.fade)
+        
+        // 2. Composition
+        let composition = RenderComposition(renderSize: CGSize(width: 1280, height: 720), layers: [layer_1, layer_2, layer_3])
+
+        // 3. VideoLab
+        let videoLab = VideoLab(renderComposition: composition)
+        
+        return videoLab
+    }
+    
+    func advancedVideoTransitionDemo() -> VideoLab {
+        let duration = CMTime(seconds: 5, preferredTimescale: 600)
+        
+        // 1. Layer 1
+        let asset_1 = AVAsset(url: Bundle.main.url(forResource: "video1", withExtension: "MOV")!)
+        let source_1 = AVAssetSource(asset: asset_1)
+        source_1.selectedTimeRange = CMTimeRange(start: CMTime.zero, duration: duration)
+        var time = source_1.selectedTimeRange
+        let layer_1 = RenderLayer(timeRange: time, source: source_1)
+        layer_1.transition = .init(.flyeye)
+
+        // 1. Layer 2
+        let asset_2 = AVAsset(url: Bundle.main.url(forResource: "video2", withExtension: "MOV")!)
+        let source_2 = AVAssetSource(asset: asset_2)
+        source_2.selectedTimeRange = CMTimeRange(start: CMTime.zero, duration: duration)
+        time = source_2.selectedTimeRange
+        time.start = CMTimeRangeGetEnd(layer_1.timeRange)
+        let layer_2 = RenderLayer(timeRange: time, source: source_2)
+        
+        // 2. Composition
+        let composition = RenderComposition(renderSize: CGSize(width: 1280, height: 720), layers: [layer_1, layer_2])
+
         // 3. VideoLab
         let videoLab = VideoLab(renderComposition: composition)
         

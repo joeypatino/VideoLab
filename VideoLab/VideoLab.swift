@@ -13,35 +13,32 @@ public class VideoLab {
     
     private var videoRenderLayers: [VideoRenderLayer] = []
     private var audioRenderLayersInTimeline: [AudioRenderLayer] = []
-    
-    private var composition: AVComposition?
-    private var videoComposition: AVMutableVideoComposition?
     private var audioMix: AVAudioMix?
-
+    
     // MARK: - Public
     public init(renderComposition: RenderComposition) {
         self.renderComposition = renderComposition
     }
     
     public func makePlayerItem() -> AVPlayerItem {
-        let composition = makeComposition()
-        let playerItem = AVPlayerItem(asset: composition)
-        playerItem.videoComposition = makeVideoComposition()
+        let result = makeComposition()
+        let playerItem = AVPlayerItem(asset: result.0)
+        playerItem.videoComposition = makeVideoComposition(result)
         playerItem.audioMix = makeAudioMix()
         return playerItem
     }
     
     public func makeImageGenerator() -> AVAssetImageGenerator {
-        let composition = makeComposition()
-        let imageGenerator = AVAssetImageGenerator(asset: composition)
-        imageGenerator.videoComposition = makeVideoComposition()
+        let result = makeComposition()
+        let imageGenerator = AVAssetImageGenerator(asset: result.0)
+        imageGenerator.videoComposition = makeVideoComposition(result)
         return imageGenerator
     }
     
     public func makeExportSession(presetName: String, outputURL: URL) -> AVAssetExportSession? {
-        let composition = makeComposition()
-        let exportSession = AVAssetExportSession(asset: composition, presetName: presetName)
-        let videoComposition = makeVideoComposition()
+        let result = makeComposition()
+        let exportSession = AVAssetExportSession(asset: result.0, presetName: presetName)
+        let videoComposition = makeVideoComposition(result)
         videoComposition.animationTool = makeAnimationTool()
         exportSession?.videoComposition = videoComposition
         exportSession?.audioMix = makeAudioMix()
@@ -51,11 +48,11 @@ public class VideoLab {
     }
     
     // MARK: - Private
-    private func makeComposition() -> AVComposition {
+    
+    private func makeComposition() -> (AVMutableComposition, CompositionLayout, [AVMutableCompositionTrack], [AVMutableCompositionTrack]) {
         // TODO: optimize make performance, like return when exist
         let composition = AVMutableComposition()
-        self.composition = composition
-        
+                
         // Increase track ID
         var increasementTrackID: CMPersistentTrackID = 0
         func increaseTrackID() -> Int32 {
@@ -63,7 +60,7 @@ public class VideoLab {
             increasementTrackID = trackID
             return trackID
         }
-
+        
         // Step 1: Add video tracks
         
         // Substep 1: Generate videoRenderLayers sorted by start time.
@@ -75,7 +72,7 @@ public class VideoLab {
         }.compactMap {
             VideoRenderLayer.makeVideoRenderLayer(renderLayer: $0)
         }
-
+        
         // Generate video track ID. This inline method is used in substep 2.
         // You can reuse the track ID if there is no intersection with some of the previous, otherwise increase an ID.
         var videoTrackIDInfo: [CMPersistentTrackID: CMTimeRange] = [:]
@@ -109,6 +106,13 @@ public class VideoLab {
             }
         }
         
+        var transitionVideoTracks: [AVMutableCompositionTrack] = []
+        var transitionAudioTracks: [AVMutableCompositionTrack] = []
+        let layout = generateCompositionTracks(forComposition: composition,
+                                               videoLayers: videoRenderLayersInTimeline,
+                                               transitionVideoTracks: &transitionVideoTracks,
+                                               transitionAudioTracks: &transitionAudioTracks)
+        
         let minimumStartTime = videoRenderLayersInTimeline.first?.timeRangeInTimeline.start
         var maximumEndTime = videoRenderLayersInTimeline.first?.timeRangeInTimeline.end
         videoRenderLayersInTimeline.forEach { videoRenderLayer in
@@ -129,7 +133,7 @@ public class VideoLab {
             let videoTrackID = increaseTrackID()
             VideoRenderLayer.addBlankVideoTrack(to: composition, in: timeRange, preferredTrackID: videoTrackID)
         }
-
+        
         // Step 2: Add audio tracks
         
         // Substep 1: Generate audioRenderLayers sorted by start time.
@@ -159,59 +163,143 @@ public class VideoLab {
                 audioRenderLayer.addAudioTrack(to: composition, preferredTrackID: trackID)
             }
         }
-        
-        return composition
+        composition.tracks(withMediaType: .audio)
+            .filter({ $0.timeRange == .invalid })
+            .forEach {
+                composition.removeTrack($0)
+            }
+        return (composition, layout, transitionVideoTracks, transitionAudioTracks)
     }
     
-    private func makeVideoComposition() -> AVMutableVideoComposition {
-        // TODO: optimize make performance, like return when exist
-        
-        // Convert videoRenderLayers to videoCompositionInstructions
-        
-        // Step 1: Put the layer start time and end time on the timeline, each interval is an instruction. Then sort by time
-        // Make sure times contain zero
-        var times: [CMTime] = [CMTime.zero]
-        videoRenderLayers.forEach { videoRenderLayer in
-            let startTime = videoRenderLayer.timeRangeInTimeline.start
-            let endTime = videoRenderLayer.timeRangeInTimeline.end
-            if !times.contains(startTime) {
-                times.append(startTime)
-            }
-            if !times.contains(endTime) {
-                times.append(endTime)
-            }
+    private func generateCompositionTracks(forComposition composition: AVMutableComposition,
+                                           videoLayers: [VideoRenderLayer],
+                                           transitionVideoTracks: inout [AVMutableCompositionTrack],
+                                           transitionAudioTracks: inout [AVMutableCompositionTrack]) -> CompositionLayout {
+        var compositionTimes: [CMTime] = [CMTime.zero]
+        var passthroughRanges: [CMTimeRange] = []
+        var transitionRanges: [CMTimeRange] = []
+        var nextStartTime: CMTime = .zero
+        var isPreviousLayerTransitionLayer = false
+
+        while transitionVideoTracks.count < 2 {
+            transitionVideoTracks.append(composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)!)
         }
-        times.sort { $0 < $1 }
+        while transitionAudioTracks.count < 2 {
+            transitionAudioTracks.append(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)!)
+        }
         
-        // Step 2: Create instructions for each interval
+        for (idx, videoLayer) in videoLayers.enumerated() {
+            let isTransitionLayer = videoLayer.transition.isAnimated
+            let transitionDuration = CMTime(seconds: videoLayer.transition.duration, preferredTimescale: 600)
+            let layerTimeRangeInTimeline = CMTimeRange(start: nextStartTime, duration: videoLayer.timeRangeInTimeline.duration)
+            
+            /// close range from last iteration and store the filterTimeRangeMap information
+            if let endTime = compositionTimes.last, isPreviousLayerTransitionLayer  {
+                let start = layerTimeRangeInTimeline.start
+                transitionRanges.append(CMTimeRange(start: start, end: endTime))
+            }
+            
+            // store the passThroughTimeRangeMap information
+            if isTransitionLayer {
+                var passThroughTimeRange: CMTimeRange
+                if isPreviousLayerTransitionLayer {
+                    passThroughTimeRange = CMTimeRange(start: CMTimeAdd(layerTimeRangeInTimeline.start, transitionDuration), end: CMTimeSubtract(layerTimeRangeInTimeline.end, transitionDuration))
+                } else {
+                    passThroughTimeRange = CMTimeRange(start: layerTimeRangeInTimeline.start, end: CMTimeSubtract(layerTimeRangeInTimeline.end, transitionDuration))
+                }
+                if idx == videoLayers.count-1 {
+                    passThroughTimeRange = CMTimeRange(start: passThroughTimeRange.start, end: CMTimeAdd(passThroughTimeRange.end, transitionDuration))
+                }
+                //passThroughTimeRangeMap[videoRenderLayer.trackID] = passThroughTime
+                passthroughRanges.append(passThroughTimeRange)
+            }
+            else {
+                var passThroughTimeRange: CMTimeRange
+                if isPreviousLayerTransitionLayer {
+                    passThroughTimeRange = CMTimeRange(start: CMTimeAdd(layerTimeRangeInTimeline.start, transitionDuration), end: layerTimeRangeInTimeline.end)
+                } else {
+                    passThroughTimeRange = CMTimeRange(start: layerTimeRangeInTimeline.start, end: layerTimeRangeInTimeline.end)
+                }
+                if idx == videoLayers.count-1 {
+                    passThroughTimeRange = CMTimeRange(start: passThroughTimeRange.start, end: passThroughTimeRange.end)
+                }
+                //passThroughTimeRangeMap[videoRenderLayer.trackID] = passThroughTime
+                passthroughRanges.append(passThroughTimeRange)
+            }
+                        
+            // store the times
+            if !compositionTimes.contains(layerTimeRangeInTimeline.start) {
+                compositionTimes.append(layerTimeRangeInTimeline.start)
+            }
+            if !compositionTimes.contains(layerTimeRangeInTimeline.end) {
+                compositionTimes.append(layerTimeRangeInTimeline.end)
+            }
+            videoLayer.timeRangeInTimeline = layerTimeRangeInTimeline
+            
+            // update offset for the next layer start time
+            nextStartTime = CMTimeAdd(nextStartTime, layerTimeRangeInTimeline.duration)
+            // if this layer is a transition, then offset the next start layer
+            if isTransitionLayer { nextStartTime = CMTimeSubtract(nextStartTime, transitionDuration) }
+            isPreviousLayerTransitionLayer = isTransitionLayer
+        }
+        compositionTimes.sort { $0 < $1 }
+        
+        return CompositionLayout(times: compositionTimes, passthroughRanges: passthroughRanges, transitionRanges: transitionRanges)
+    }
+    
+    private func generateCompositionInstructions(forVideoLayers videoLayers: [VideoRenderLayer],
+                                                 compositionLayout: CompositionLayout,
+                                                 transitionVideoTracks: [AVMutableCompositionTrack],
+                                                 transitionAudioTracks: [AVMutableCompositionTrack]) -> [VideoCompositionInstruction] {
+        let times = compositionLayout.times
+        let transitionRanges = compositionLayout.transitionRanges
         var instructions: [VideoCompositionInstruction] = []
         for index in 0..<times.count - 1 {
+            let alternatingIndex = index % 2
             let startTime = times[index]
             let endTime = times[index + 1]
             let timeRange = CMTimeRange(start: startTime, end: endTime)
-            var intersectingVideoRenderLayers: [VideoRenderLayer] = []
-            videoRenderLayers.forEach { videoRenderLayer in
-                if !videoRenderLayer.timeRangeInTimeline.intersection(timeRange).isEmpty {
-                    intersectingVideoRenderLayers.append(videoRenderLayer)
+            let isTransition = transitionRanges.contains(where: { timeRange == $0 })
+            
+            func layers(_ layers: [VideoRenderLayer], intersecting: CMTimeRange) -> [VideoRenderLayer] {
+                return layers.filter {
+                    return !$0.timeRangeInTimeline.intersection(timeRange).isEmpty
                 }
             }
-            
-            intersectingVideoRenderLayers.sort { $0.renderLayer.layerLevel < $1.renderLayer.layerLevel }
-            let instruction = VideoCompositionInstruction(videoRenderLayers: intersectingVideoRenderLayers, timeRange: timeRange)
+            var intersectingVideoRenderLayers = layers(videoLayers, intersecting: timeRange)
+            let transitionLayers = intersectingVideoRenderLayers
+                .filter({ videoRenderLayer in
+                transitionRanges.contains(where: {
+                    !videoRenderLayer.timeRangeInTimeline.intersection($0).isEmpty
+                })
+            })
+            intersectingVideoRenderLayers.sort { $0.renderLayer.layerLevel > $1.renderLayer.layerLevel }
+            let transition = transitionLayers.compactMap { $0.transition }.first ?? .none
+            let trackIDs = [ NSNumber(value: transitionVideoTracks[0].trackID), NSNumber(value: transitionVideoTracks[1].trackID) ]
+            let instruction: VideoCompositionInstruction
+            if isTransition {
+                instruction = VideoCompositionInstruction(videoRenderLayers: intersectingVideoRenderLayers, theSourceTrackIDs: trackIDs, transition: transition, forTimeRange: timeRange)
+                instruction.foregroundTrackID = transitionVideoTracks[1 - alternatingIndex].trackID
+                instruction.backgroundTrackID = transitionVideoTracks[alternatingIndex].trackID
+            } else {
+                instruction = VideoCompositionInstruction(videoRenderLayers: intersectingVideoRenderLayers, forTimeRange: timeRange)
+            }
             instructions.append(instruction)
         }
-
+        return instructions
+    }
+    
+    
+    private func makeVideoComposition(_ result: (composition: AVMutableComposition, layout: CompositionLayout, videoTracks: [AVMutableCompositionTrack], audioTracks: [AVMutableCompositionTrack])) -> AVMutableVideoComposition {
         // Create videoComposition. Specify frameDuration, renderSize, instructions, and customVideoCompositorClass.
         let videoComposition = AVMutableVideoComposition()
         videoComposition.frameDuration = renderComposition.frameDuration
         videoComposition.renderSize = renderComposition.renderSize
-        videoComposition.instructions = instructions
         videoComposition.customVideoCompositorClass = VideoCompositor.self
-        self.videoComposition = videoComposition
-        
+        videoComposition.instructions = generateCompositionInstructions(forVideoLayers: videoRenderLayers, compositionLayout: result.layout, transitionVideoTracks: result.videoTracks, transitionAudioTracks: result.audioTracks)
         return videoComposition
     }
-    
+
     private func makeAudioMix() -> AVAudioMix? {
         // TODO: optimize make performance, like return when exist
         
@@ -224,7 +312,7 @@ public class VideoLab {
             audioMixInputParameters.audioTapProcessor = audioRenderLayer.makeAudioTapProcessor()
             inputParameters.append(audioMixInputParameters)
         }
-
+        
         // Create audioMix. Specify inputParameters.
         let audioMix = AVMutableAudioMix()
         audioMix.inputParameters = inputParameters
@@ -249,4 +337,40 @@ public class VideoLab {
         let animationTool = AVVideoCompositionCoreAnimationTool(postProcessingAsVideoLayer: videoLayer, in: parentLayer)
         return animationTool
     }
+    
+    // debug helpers
+    
+    private func debugVideoLayers(_ videoRenderLayers: [VideoRenderLayer], title: String = "VideoLayers", isTransition: Bool = false) {
+        print()
+        print("[\(title)]")
+        videoRenderLayers.forEach { print(" [\($0.trackID)]: \($0.timeRangeInTimeline) \($0.transition.isAnimated && isTransition ? "(Transition: \($0.transition.effect))" : "")") }
+        print()
+    }
+    
+    private func debugCompositionTracks(composition: AVMutableComposition) {
+        print()
+        print("[Composition]")
+        composition.tracks.forEach { print(" (\($0.trackID)) \($0.mediaType.rawValue) \($0.timeRange)") }
+        print()
+    }
+    
+    private func debugTimeRanges(_ timeRanges: [CMTimeRange], title: String) {
+        print()
+        print("[\(title)]")
+        timeRanges.forEach { print(" \($0)") }
+        print()
+    }
+    
+    private func debugInstructions(_ instructions: [VideoCompositionInstruction]) {
+        print()
+        print("[Instruction]")
+        instructions.forEach { print(" \($0.debugDescription)") }
+        print()
+    }
+}
+
+struct CompositionLayout {
+    let times: [CMTime]
+    let passthroughRanges: [CMTimeRange]
+    let transitionRanges: [CMTimeRange]
 }
