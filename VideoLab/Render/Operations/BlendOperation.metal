@@ -74,3 +74,11 @@ fragment half4 blendOperationFragment(SingleInputVertexIO fragmentInput [[stage_
 
     return mix(backColor, blendColor, blendOpacity);
 }
+
+//fragment half4 blendOperationFragment(SingleInputVertexIO fragmentInput [[stage_in]],
+//                                      texture2d<half> inputTexture [[texture(0)]])
+//{
+//    constexpr sampler quadSampler;
+//    half4 sourceColor = inputTexture.sample(quadSampler, fragmentInput.textureCoordinate);
+//    return sourceColor;
+//}

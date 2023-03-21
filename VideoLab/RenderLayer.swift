@@ -9,6 +9,7 @@
 import AVFoundation
 
 public class RenderLayer: Animatable {
+    public weak var renderGroup: RenderLayerGroup?
     public var timeRange: CMTimeRange
 
     public var layerLevel: Int = 0

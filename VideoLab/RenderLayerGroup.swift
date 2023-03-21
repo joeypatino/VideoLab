@@ -9,5 +9,7 @@
 import AVFoundation
 
 public class RenderLayerGroup: RenderLayer {
-    public var layers: [RenderLayer] = []
+    public var layers: [RenderLayer] = [] {
+        didSet { layers.forEach { $0.renderGroup = self } }
+    }
 }

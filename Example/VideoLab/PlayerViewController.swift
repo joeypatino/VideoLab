@@ -52,17 +52,20 @@ class PlayerViewController: AVPlayerViewController {
             do {
                 try FileManager.default.removeItem(at: outputURL)
             } catch {
+                print("error", error)
             }
         }
         
         exportSession = videoLab.makeExportSession(presetName: AVAssetExportPresetHighestQuality, outputURL: outputURL)
-        exportSession?.exportAsynchronously(completionHandler: {
-            switch self.exportSession?.status {
+        exportSession?.exportAsynchronously(completionHandler: { [weak self] in
+            guard let self = self else { return }
+            guard let exportSession = self.exportSession else { return }
+            switch exportSession.status {
             case .completed:
                 self.saveFileToAlbum(outputURL)
                 print("export completed")
             case .failed:
-                print("export failed")
+                print("export failed", exportSession.error as Any)
             case .cancelled:
                 print("export cancelled")
             default:

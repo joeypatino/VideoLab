@@ -8,6 +8,7 @@
 import AVFoundation
 
 class VideoRenderLayer {
+    weak var renderGroup: VideoRenderLayerGroup?
     let renderLayer: RenderLayer
     var trackID: CMPersistentTrackID = kCMPersistentTrackID_Invalid
     var timeRangeInTimeline: CMTimeRange {

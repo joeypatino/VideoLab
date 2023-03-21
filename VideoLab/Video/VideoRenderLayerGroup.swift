@@ -9,7 +9,9 @@
 import AVFoundation
 
 class VideoRenderLayerGroup: VideoRenderLayer {
-    var videoRenderLayers: [VideoRenderLayer] = []
+    var videoRenderLayers: [VideoRenderLayer] = [] {
+        didSet { videoRenderLayers.forEach { $0.renderGroup = self } }
+    }
     private var recursiveVideoRenderLayersInGroup: [VideoRenderLayer] = []
 
     override init(renderLayer: RenderLayer) {

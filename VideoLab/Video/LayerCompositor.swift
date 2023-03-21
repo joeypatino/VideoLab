@@ -137,12 +137,10 @@ class LayerCompositor {
             guard let foregroundTexture = cloneTexture(from: sourceTexture) else {
                 return
             }
-            
-            defer {
-                // Lock is invoked in the imageTexture method
-                foregroundTexture.unlock()
-            }
             renderTextureLayer(foregroundTexture)
+            // Lock is invoked in the imageTexture method
+            foregroundTexture.unlock()
+            
             renderImageTransition(request, in: outputTexture)
         }
         else {

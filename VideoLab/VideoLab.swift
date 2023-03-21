@@ -43,7 +43,7 @@ public class VideoLab {
         exportSession?.videoComposition = videoComposition
         exportSession?.audioMix = makeAudioMix()
         exportSession?.outputURL = outputURL
-        exportSession?.outputFileType = AVFileType.mp4
+        exportSession?.outputFileType = AVFileType.mov
         return exportSession
     }
     
@@ -106,8 +106,8 @@ public class VideoLab {
             }
         }
         
-        var transitionVideoTracks: [AVMutableCompositionTrack] = []
-        var transitionAudioTracks: [AVMutableCompositionTrack] = []
+        var transitionVideoTracks: [AVMutableCompositionTrack] = composition.tracks(withMediaType: .video)
+        var transitionAudioTracks: [AVMutableCompositionTrack] = composition.tracks(withMediaType: .audio)
         let layout = generateCompositionTracks(forComposition: composition,
                                                videoLayers: videoRenderLayersInTimeline,
                                                transitionVideoTracks: &transitionVideoTracks,
@@ -168,6 +168,10 @@ public class VideoLab {
             .forEach {
                 composition.removeTrack($0)
             }
+        
+        debugVideoLayers(videoRenderLayers)
+        debugVideoLayers(videoRenderLayersInTimeline)
+        debugCompositionTracks(composition: composition)
         return (composition, layout, transitionVideoTracks, transitionAudioTracks)
     }
     
@@ -234,7 +238,15 @@ public class VideoLab {
             if !compositionTimes.contains(layerTimeRangeInTimeline.end) {
                 compositionTimes.append(layerTimeRangeInTimeline.end)
             }
-            videoLayer.timeRangeInTimeline = layerTimeRangeInTimeline
+            
+            if videoLayer.renderGroup != nil {
+                print("[VideoRenderLayerGroup]")
+            } else {
+                // MARK: this breaks VideoRenderGroups?
+                // it offsets teh VideoLayers by the incorrect amout..
+                // Do i instead need to offset by again by the groups offset... How?
+                videoLayer.timeRangeInTimeline = layerTimeRangeInTimeline
+            }
             
             // update offset for the next layer start time
             nextStartTime = CMTimeAdd(nextStartTime, layerTimeRangeInTimeline.duration)
@@ -244,6 +256,8 @@ public class VideoLab {
         }
         compositionTimes.sort { $0 < $1 }
         
+        debugTimeRanges(transitionRanges, title: "Transitions")
+        debugTimeRanges(passthroughRanges, title: "Passthrough")
         return CompositionLayout(times: compositionTimes, passthroughRanges: passthroughRanges, transitionRanges: transitionRanges)
     }
     
@@ -286,6 +300,7 @@ public class VideoLab {
             }
             instructions.append(instruction)
         }
+        debugInstructions(instructions)
         return instructions
     }
     
